@@ -68,3 +68,25 @@ with st.form("new_league_form"):
     p_cols = st.columns(6)
     for i, cat in enumerate(pitcher_cats):
         pitcher_inputs[cat] = p_cols[i % 6].number_input(cat, value=0.0, step=0.5, format="%.2f", key=f"p_{cat}")
+
+    # Submit button is properly indented inside the 'with st.form' block
+    submitted = st.form_submit_button("Save New League")
+
+    if submitted:
+        if not new_league_name.strip():
+            st.error("Please enter a League Name before saving.")
+        else:
+            # Filter out categories left at 0.0 to keep the YAML file clean
+            clean_hitters = {k: v for k, v in hitter_inputs.items() if v != 0.0}
+            clean_pitchers = {k: v for k, v in pitcher_inputs.items() if v != 0.0}
+            
+            # Update the dictionary and save
+            config[new_league_name] = {
+                "hitters": clean_hitters,
+                "pitchers": clean_pitchers
+            }
+            save_config(config)
+            
+            st.success(f"Successfully added {new_league_name} to config/leagues.yaml!")
+            # Rerun the app to instantly display the newly added league in the list above
+            st.rerun()
