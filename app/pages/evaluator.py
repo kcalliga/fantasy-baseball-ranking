@@ -1,33 +1,14 @@
 import streamlit as st
 import pandas as pd
-import yaml
-import os
+import numpy as np
 
 st.set_page_config(page_title="System Evaluator", page_icon="⚖️", layout="wide")
 
-CONFIG_PATH = "config/leagues.yaml"
-
-def load_config():
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r") as file:
-            return yaml.safe_load(file) or {}
-    return {}
-
 st.title("⚖️ Projection System Evaluator")
-st.markdown("Compare historical FanGraphs projections (e.g., ZiPS, Steamer) against actual end-of-season stats.")
+st.markdown("Evaluate raw statistical accuracy of projection systems (e.g., ZiPS, Steamer) ignoring fantasy point values.")
 
-config = load_config()
-
-if not config:
-    st.warning("No league rules found. Please add a league in the 'League Rules' menu first.")
-    st.stop()
-
-# --- 1. SETTINGS & UPLOADS ---
-st.sidebar.header("Evaluation Settings")
-selected_league = st.sidebar.selectbox("Select League Scoring", list(config.keys()))
-player_pool = st.sidebar.radio("Analyze:", ["Hitters", "Pitchers"])
-
-st.subheader(f"Upload FanGraphs CSVs ({player_pool})")
+# --- 1. FILE UPLOADS ---
+st.subheader("Upload FanGraphs CSVs")
 col1, col2 = st.columns(2)
 
 with col1:
@@ -37,51 +18,69 @@ with col2:
 
 st.divider()
 
-# --- 2. DATA PROCESSING & VISUALIZATION ---
+# --- 2. DATA PROCESSING ---
 if proj_file and actual_file:
-    # Read the CSVs into Pandas DataFrames
     df_proj = pd.read_csv(proj_file)
     df_actual = pd.read_csv(actual_file)
     
-    st.success("Files loaded successfully! Merging datasets...")
-
-    # NOTE: In FanGraphs data, it is best to merge on 'playerid' to avoid name mismatches.
-    # For this skeleton, we will ensure 'Name' and 'playerid' exist before merging.
+    # Standardize column names to lowercase to catch PlayerId vs playerid discrepancies
+    df_proj.columns = df_proj.columns.str.lower()
+    df_actual.columns = df_actual.columns.str.lower()
+    
     if 'playerid' in df_proj.columns and 'playerid' in df_actual.columns:
-        # We add suffixes to tell the columns apart after merging (e.g., HR_proj vs HR_actual)
-        df_merged = pd.merge(df_proj, df_actual, on=['playerid', 'Name'], suffixes=('_proj', '_actual'))
+        # Merge datasets (using lowercase 'name' and 'playerid')
+        df = pd.merge(df_proj, df_actual, on=['playerid', 'name'], suffixes=('_proj', '_act'))
         
-        # --- MOCK CALCULATION FOR UI TESTING ---
-        # In the future, this math will be moved to your src/evaluator.py file.
-        # For the skeleton, we will just generate mock total points to show the layout.
-        import numpy as np
-        df_merged['Projected_Points'] = np.random.randint(200, 600, df_merged.shape[0])
-        df_merged['Actual_Points'] = np.random.randint(150, 650, df_merged.shape[0])
-        df_merged['Differential'] = df_merged['Actual_Points'] - df_merged['Projected_Points']
+        # Identify numeric columns that exist in both files to populate our dropdown
+        common_cols = [c.replace('_proj', '') for c in df.columns if c.endswith('_proj')]
+        numeric_stats = [c for c in common_cols if c != 'playerid' and pd.api.types.is_numeric_dtype(df[f'{c}_proj'])]
         
-        # Filter down to the columns we want to display
-        display_df = df_merged[['Name', 'Projected_Points', 'Actual_Points', 'Differential']]
+        # --- 3. UI CONTROLS ---
+        st.sidebar.header("Evaluation Settings")
         
-        # --- 3. DASHBOARD METRICS & CHARTS ---
-        st.subheader(f"Evaluation Results for {selected_league}")
+        # We use upper() here so the dropdown menu looks clean (e.g., "HR" instead of "hr")
+        selected_stat = st.sidebar.selectbox("Select Stat to Evaluate", sorted([s.upper() for s in numeric_stats]))
         
-        # High-level metrics
+        # Convert the selected stat back to lowercase to do the math
+        selected_stat_lower = selected_stat.lower()
+        proj_col = f'{selected_stat_lower}_proj'
+        act_col = f'{selected_stat_lower}_act'
+        
+        # Player-Level Accuracy: Actual minus Projected (Positive means player beat the projection)
+        df['Differential'] = df[act_col] - df[proj_col]
+        df['Absolute_Error'] = df['Differential'].abs()
+        
+        # --- 4. SYSTEM METRICS (THE "TOTAL") ---
+        st.subheader(f"Total System Accuracy for: {selected_stat}")
+        
+        # Calculate Mean Absolute Error (MAE) and Root Mean Square Error (RMSE) across the whole system
+        mae = df['Absolute_Error'].mean()
+        rmse = np.sqrt((df['Differential'] ** 2).mean())
+        
         met1, met2, met3 = st.columns(3)
-        met1.metric("Players Evaluated", len(display_df))
-        met2.metric("Mean Absolute Error (Mock)", "34.2 pts")
-        met3.metric("System Tendency (Mock)", "Over-projected by 5%")
+        met1.metric("Total Players Evaluated", len(df))
+        met2.metric("Total MAE (Average Miss)", f"{mae:.2f}")
+        met3.metric("Total RMSE (Weighted Miss)", f"{rmse:.2f}")
         
-        st.write("### Top Discrepancies")
-        st.write("Players where the projection system was the least accurate:")
+        st.divider()
         
-        # Sort by the biggest miss (absolute differential)
-        display_df['Abs_Diff'] = display_df['Differential'].abs()
-        display_df = display_df.sort_values(by='Abs_Diff', ascending=False).drop(columns=['Abs_Diff'])
+        # --- 5. PLAYER LEADERBOARD (THE "EACH PLAYER") ---
+        st.write(f"### Player-Level Accuracy for {selected_stat}")
+        st.write("Review the individual error for every player in the dataset, sorted by the biggest misses.")
         
-        st.dataframe(display_df.head(15), use_container_width=True)
+        # Format the display dataframe (using lowercase 'name')
+        display_df = df[['name', proj_col, act_col, 'Differential', 'Absolute_Error']].copy()
+        
+        # Sort by the biggest absolute miss
+        display_df = display_df.sort_values(by='Absolute_Error', ascending=False)
+        
+        # Rename columns to be cleaner in the UI
+        display_df.columns = ['Player Name', 'Projected', 'Actual', 'Difference', 'Absolute Error']
+        
+        # Display the interactive table
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
         
     else:
-        st.error("Could not find 'playerid' in one or both CSVs. Please ensure you are using raw FanGraphs exports.")
-        
+        st.error("Could not find 'playerid' in one or both CSVs. Please check your FanGraphs exports.")
 else:
-    st.info("Awaiting file uploads. Please drop your CSVs in the boxes above.")
+    st.info("Awaiting file uploads. Drop your Projections and Actuals CSVs above.")
