@@ -1,22 +1,21 @@
 import streamlit as st
 
-# Define the individual pages
-# The first argument is the file path, the second is the display name in the menu
-rules_page = st.Page("pages/rules.py", title="League Rules", icon="⚙️")
-evaluator_page = st.Page("pages/evaluator.py", title="System Evaluator", icon="⚖️")
-draft_page = st.Page("pages/draft.py", title="Draft Board & Valuation", icon="📋")
-trends_page = st.Page("pages/trends.py", title="Roster Trends", icon="📈")
+st.set_page_config(page_title="Fantasy Analytics Home", page_icon="⚾", layout="wide")
 
-# Group the pages into categorized sections
-pg = st.navigation({
-    "Setup": [rules_page],
-    "1. Pre-Season": [evaluator_page],
-    "2. Draft Time": [draft_page],
-    "3. In-Season": [trends_page]
-})
+st.title("⚾ Fantasy Baseball Analytics Suite")
 
-# Configure the main page layout once for the whole app
-st.set_page_config(page_title="Fantasy Baseball Tracker", page_icon="⚾", layout="wide")
+st.markdown("""
+Welcome to your custom analytical dashboard. Use the sidebar on the left to navigate between tools:
 
-# Run the navigation router
-pg.run()
+### 1. 📊 System Evaluator
+Compare pre-season projection systems (ZiPS, Steamer, etc.) against actual results to see which is most accurate for your league settings.
+
+### 2. 📈 Roster Trends
+Track individual player performance against their projected pace. Includes the **League Pulse** to find hot waiver wire targets and acceleration (velocity) metrics.
+
+### 3. 🧪 Research Lab
+Perform deep-dive statistical analysis. Use the **Correlation Matrix** to find relationships between raw metrics (like Bat Speed) and fantasy outcomes.
+""")
+
+st.divider()
+st.info("💡 **Pro Tip:** New weekly data dropped into the `data/weekly_stats/` folders will automatically update the Trends and Research Lab pages.")
