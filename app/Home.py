@@ -1,26 +1,22 @@
 import streamlit as st
 
-# Configure the main page layout
-st.set_page_config(
-    page_title="Fantasy Baseball Tracker",
-    page_icon="⚾",
-    layout="wide"
-)
+# Define the individual pages
+# The first argument is the file path, the second is the display name in the menu
+rules_page = st.Page("pages/rules.py", title="League Rules", icon="⚙️")
+evaluator_page = st.Page("pages/evaluator.py", title="System Evaluator", icon="⚖️")
+draft_page = st.Page("pages/draft.py", title="Draft Board & Valuation", icon="📋")
+trends_page = st.Page("pages/trends.py", title="Roster Trends", icon="📈")
 
-st.title("⚾ Fantasy Baseball Rating System")
+# Group the pages into categorized sections
+pg = st.navigation({
+    "Setup": [rules_page],
+    "1. Pre-Season": [evaluator_page],
+    "2. Draft Time": [draft_page],
+    "3. In-Season": [trends_page]
+})
 
-st.markdown("""
-Welcome to your custom Fantasy Baseball tracking platform. 
+# Configure the main page layout once for the whole app
+st.set_page_config(page_title="Fantasy Baseball Tracker", page_icon="⚾", layout="wide")
 
-This tool is designed to ingest FanGraphs CSV data and evaluate it against your specific league scoring settings. Use the sidebar to navigate between different tools:
-
-* **League Rules:** View and manage scoring configurations for Fantrax, Yahoo, and RTSports.
-* **System Evaluator:** Upload historical FanGraphs projections (ZiPS, Steamer, etc.) to test model accuracy.
-* **Roster Trends:** Track your current team's performance against expected points.
-""")
-
-st.info("👈 Select a tool from the sidebar to get started.")
-
-# You can add high-level summary stats or quick links here later
-st.divider()
-st.write("Ready for CSV ingestion.")
+# Run the navigation router
+pg.run()
