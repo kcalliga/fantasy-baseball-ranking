@@ -63,73 +63,64 @@ df_p, df_a = load_and_combine_data(weekly_files, proj_file)
 
 # Logic definitions
 latest_week_num = df_a['week_num'].max()
+prev_week_num = latest_week_num - 1
 
 if player_type == "Batters":
     core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
     vol_stat = 'pa'
-    # DYNAMIC THRESHOLD: 5 PA per week elapsed
     MIN_VOL_THRESHOLD = 5.0 * latest_week_num
 else:
     core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
     vol_stat = 'ip'
-    # DYNAMIC THRESHOLD: 1.0 IP per week elapsed
     MIN_VOL_THRESHOLD = 1.0 * latest_week_num
 
-# Stats where LOWER is BETTER
 negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
 
-# --- 4. LEAGUE PULSE (MASTER TABLE) ---
-st.header("📡 League Pulse: Waivers & Watchlist")
-with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded=False):
+# --- 4. LEAGUE PULSE (WITH VELOCITY) ---
+st.header("📡 League Pulse: Momentum & Waivers")
+with st.expander(f"🔍 Scan All {player_type} (Ranked by Velocity)", expanded=False):
     latest_stats = df_a[df_a['week_num'] == latest_week_num]
+    has_prev = prev_week_num in df_a['week_num'].unique()
     
     pulse_data = []
     for _, row in latest_stats.iterrows():
         p_name = row['name']
         p_proj = df_p[df_p['name'] == p_name]
-        
-        if p_proj.empty: continue
-        
-        # VOLUME FILTER: Using Dynamic Threshold
-        current_vol = row.get(vol_stat, 0)
-        if current_vol < MIN_VOL_THRESHOLD:
+        if p_proj.empty or row.get(vol_stat, 0) < MIN_VOL_THRESHOLD:
             continue
         
-        total_delta = 0
-        for stat in core_stats:
-            if stat not in row or stat not in p_proj.columns: 
-                continue
-            
-            stat_std = df_p[stat].std() + 1e-9
-            weekly_pace = p_proj[stat].values[0] / 26
-            
-            raw_delta = row[stat] - weekly_pace
-            
-            if stat.lower() in negative_stats:
-                stat_delta = -(raw_delta) / stat_std
-            else:
-                stat_delta = raw_delta / stat_std
-                
-            total_delta += stat_delta
-            
+        def calculate_heat(stats_row):
+            h = 0
+            for s in core_stats:
+                if s not in stats_row or s not in p_proj.columns: continue
+                std = df_p[s].std() + 1e-9
+                pace = p_proj[s].values[0] / 26
+                diff = stats_row[s] - pace
+                h += -(diff)/std if s.lower() in negative_stats else diff/std
+            return h
+
+        curr_heat = calculate_heat(row)
+        velocity = 0
+        if has_prev:
+            prev_row = df_a[(df_a['name'] == p_name) & (df_a['week_num'] == prev_week_num)]
+            if not prev_row.empty:
+                velocity = curr_heat - calculate_heat(prev_row.iloc[0])
+
         pulse_data.append({
             'Player': p_name, 
             'Team': row.get('team', 'N/A').upper(), 
-            vol_stat.upper(): current_vol,
-            'Heat Index': round(total_delta, 2)
+            vol_stat.upper(): row.get(vol_stat, 0),
+            'Heat Index': round(curr_heat, 2),
+            'Velocity': round(velocity, 2) if has_prev else 0.0
         })
 
-    if pulse_data:
-        pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
-        st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} through Week {latest_week_num}.")
-        st.dataframe(
-            pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
-            hide_index=True,
-            use_container_width=True,
-            height=400
-        )
-    else:
-        st.warning(f"No {player_type} met the dynamic {vol_stat.upper()} threshold of {MIN_VOL_THRESHOLD}.")
+    pulse_df = pd.DataFrame(pulse_data).sort_values(by='Velocity' if has_prev else 'Heat Index', ascending=False)
+    st.write("**Velocity** shows improvement from last week. **Heat Index** shows current performance vs pace.")
+    st.dataframe(
+        pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index'])
+                      .background_gradient(cmap='PuOr', subset=['Velocity']),
+        hide_index=True, use_container_width=True, height=350
+    )
 
 st.divider()
 
@@ -145,7 +136,7 @@ if search_input:
 else:
     st.stop()
 
-# --- 6. DATA FILTERING & TREND LOGIC ---
+# --- 6. DATA FILTERING ---
 player_actuals = df_a[df_a['name'] == selected_player].sort_values('week_num')
 player_proj = df_p[df_p['name'] == selected_player]
 
@@ -154,35 +145,26 @@ if player_proj.empty:
     st.stop()
 
 weeks = player_actuals['week_num'].tolist()
-
 display_options = [s.upper() for s in core_stats if s in df_a.columns]
 display_options.insert(0, "COMBINED INDEX") 
 stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True).lower()
 
+# --- 7. TREND LOGIC & CHARTING ---
 if stat_to_track == "combined index":
     actual_units = np.zeros(len(weeks))
     expected_units = np.zeros(len(weeks))
-    
     for stat in core_stats:
-        if stat not in df_a.columns or stat not in df_p.columns or stat in ['era', 'whip', 'avg']: 
-            continue
-        
+        if stat not in df_a.columns or stat not in df_p.columns or stat in ['era', 'whip', 'avg']: continue
         stat_std = df_p[stat].std() + 1e-9
         full_proj = player_proj[stat].values[0]
         weekly_pace = full_proj / 26
-        
-        actual_cum = player_actuals[stat].cumsum().values / stat_std
-        expected_cum = np.array([weekly_pace * w for w in weeks]) / stat_std
-            
-        actual_units += actual_cum
-        expected_units += expected_cum
-    
+        actual_units += player_actuals[stat].cumsum().values / stat_std
+        expected_units += np.array([weekly_pace * w for w in weeks]) / stat_std
     chart_data = pd.DataFrame({'Week': weeks, 'Actual': actual_units, 'Projected Pace': expected_units})
     y_label = "Standardized Value Units"
 else:
     is_rate_stat = stat_to_track in ['era', 'whip', 'avg']
     val_proj = player_proj[stat_to_track].values[0]
-    
     if not is_rate_stat:
         weekly_pace = val_proj / 26
         actual_data = player_actuals[stat_to_track].cumsum().tolist()
@@ -192,29 +174,35 @@ else:
         actual_data = player_actuals[stat_to_track].tolist()
         expected_data = [val_proj] * len(weeks)
         y_label = f"Weekly {stat_to_track.upper()}"
-
     chart_data = pd.DataFrame({'Week': weeks, 'Actual': actual_data, 'Projected Pace': expected_data})
 
-# --- 7. PLOTLY CHARTING ---
 fig = px.line(chart_data, x='Week', y=['Actual', 'Projected Pace'],
               title=f"{selected_player}: {stat_to_track.upper()} Trends",
               labels={'value': y_label, 'variable': 'Legend'},
               markers=True, template="plotly_dark")
-
 fig.update_traces(line=dict(dash='dash', color='orange'), selector=dict(name='Projected Pace'))
 fig.update_traces(line=dict(width=4, color='#00d4ff'), selector=dict(name='Actual'))
-
 st.plotly_chart(fig, use_container_width=True)
 
-# Metrics
+# --- 8. WEEKLY DATA BREAKDOWN TABLE ---
+st.subheader(f"📊 {selected_player}: Week-by-Week Breakdown")
+breakdown_df = player_actuals[['week_num'] + [vol_stat] + core_stats].copy()
+breakdown_df.columns = [c.upper() for c in breakdown_df.columns]
+
+# Calculate Cumulatives for the table
+for s in core_stats:
+    if s not in ['era', 'whip', 'avg']:
+        breakdown_df[f"{s.upper()}_CUM"] = breakdown_df[s.upper()].cumsum()
+
+st.dataframe(breakdown_df, hide_index=True, use_container_width=True)
+
+# Footer Metrics
 final_act = chart_data['Actual'].iloc[-1]
 final_proj = chart_data['Projected Pace'].iloc[-1]
 diff = final_act - final_proj
-
 st.divider()
 c1, c2, c3 = st.columns(3)
 c1.metric("Current Performance", f"{final_act:.2f}")
 c2.metric("Projected Pace", f"{final_proj:.2f}")
-
 delta_val = -float(diff) if stat_to_track in negative_stats else float(diff)
 c3.metric(label="Pace Differential", value=f"{diff:.2f}", delta=delta_val)
