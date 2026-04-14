@@ -63,7 +63,58 @@ def load_and_combine_data(files, proj_f):
 
 df_p, df_a = load_and_combine_data(weekly_files, proj_file)
 
-# --- 4. FUZZY SEARCH ---
+# Core Stats for indexing
+if player_type == "Batters":
+    core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
+else:
+    core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
+
+# --- 4. LEAGUE PULSE (MASTER TABLE) ---
+st.header("📡 League Pulse: Waivers & Watchlist")
+with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded=False):
+    latest_week_num = df_a['week_num'].max()
+    latest_stats = df_a[df_a['week_num'] == latest_week_num]
+    
+    pulse_data = []
+    for _, row in latest_stats.iterrows():
+        p_name = row['name']
+        p_proj = df_p[df_p['name'] == p_name]
+        
+        if p_proj.empty: continue
+        
+        total_delta = 0
+        for stat in core_stats:
+            if stat in ['era', 'whip', 'avg'] or stat not in row or stat not in p_proj.columns: 
+                continue
+            
+            stat_std = df_p[stat].std() + 1e-9
+            weekly_pace = p_proj[stat].values[0] / 26
+            
+            # Simple Delta: (Actual this week - Weekly Pace) / StdDev
+            stat_delta = (row[stat] - weekly_pace) / stat_std
+            total_delta += stat_delta
+            
+        pulse_data.append({
+            'Player': p_name, 
+            'Team': row.get('team', 'N/A').upper(), 
+            'Heat Index': round(total_delta, 2)
+        })
+
+    pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
+    
+    st.write("Sort by clicking headers. Use the search icon to find specific waiver wire targets.")
+    
+    # Styled Master Table with Heatmap
+    st.dataframe(
+        pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
+        hide_index=True,
+        use_container_width=True,
+        height=400
+    )
+
+st.divider()
+
+# --- 5. FUZZY SEARCH ---
 all_players = sorted(df_a['name'].unique())
 default_name = "Aaron Judge" if player_type == "Batters" else ""
 search_input = st.text_input("Search for a Player (Fuzzy Matching):", value=default_name)
@@ -75,17 +126,6 @@ if search_input:
 else:
     st.stop()
 
-# --- 5. STAT SELECTION ---
-if player_type == "Batters":
-    core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
-else:
-    core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
-
-display_options = [s.upper() for s in core_stats if s in df_a.columns]
-display_options.insert(0, "COMBINED INDEX") 
-
-stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True).lower()
-
 # --- 6. DATA FILTERING & TREND LOGIC ---
 player_actuals = df_a[df_a['name'] == selected_player].sort_values('week_num')
 player_proj = df_p[df_p['name'] == selected_player]
@@ -96,41 +136,31 @@ if player_proj.empty:
 
 weeks = player_actuals['week_num'].tolist()
 
+display_options = [s.upper() for s in core_stats if s in df_a.columns]
+display_options.insert(0, "COMBINED INDEX") 
+stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True).lower()
+
 if stat_to_track == "combined index":
-    # --- CUMULATIVE UNIT LOGIC ---
-    # This creates a climbing trend for the index, similar to individual counting stats
     actual_units = np.zeros(len(weeks))
     expected_units = np.zeros(len(weeks))
     
     for stat in core_stats:
-        if stat not in df_a.columns or stat not in df_p.columns: 
+        if stat not in df_a.columns or stat not in df_p.columns or stat in ['era', 'whip', 'avg']: 
             continue
         
-        # We define a 'Unit' by the standard deviation of the season-long projections
         stat_std = df_p[stat].std() + 1e-9
-        
         full_proj = player_proj[stat].values[0]
         weekly_pace = full_proj / 26
         
-        # We skip rate stats for the combined "sum" to keep the trend line logical/climbing
-        if stat in ['era', 'whip', 'avg']:
-            continue 
-            
         actual_cum = player_actuals[stat].cumsum().values / stat_std
         expected_cum = np.array([weekly_pace * w for w in weeks]) / stat_std
             
         actual_units += actual_cum
         expected_units += expected_cum
     
-    chart_data = pd.DataFrame({
-        'Week': weeks,
-        'Actual': actual_units,
-        'Projected Pace': expected_units
-    })
-    y_label = "Cumulative Value (Standardized Units)"
-
+    chart_data = pd.DataFrame({'Week': weeks, 'Actual': actual_units, 'Projected Pace': expected_units})
+    y_label = "Standardized Value Units"
 else:
-    # --- INDIVIDUAL STAT LOGIC ---
     is_rate_stat = stat_to_track in ['era', 'whip', 'avg']
     val_proj = player_proj[stat_to_track].values[0]
     
@@ -140,7 +170,6 @@ else:
         expected_data = [weekly_pace * w for w in weeks]
         y_label = f"Cumulative {stat_to_track.upper()}"
     else:
-        # Rate stats (ERA/WHIP/AVG) show weekly snapshots vs season target
         actual_data = player_actuals[stat_to_track].tolist()
         expected_data = [val_proj] * len(weeks)
         y_label = f"Weekly {stat_to_track.upper()}"
@@ -165,11 +194,7 @@ diff = final_act - final_proj
 
 st.divider()
 c1, c2, c3 = st.columns(3)
-c1.metric("Current Total/Unit", f"{final_act:.2f}")
+c1.metric("Current Performance", f"{final_act:.2f}")
 c2.metric("Projected Pace", f"{final_proj:.2f}")
-
-# For ERA/WHIP, lower is better, so we flip the delta color logic
-if stat_to_track in ['era', 'whip']:
-    st.metric(label="Pace Differential", value=f"{diff:.2f}", delta=-float(diff))
-else:
-    st.metric(label="Pace Differential", value=f"{diff:.2f}", delta=float(diff))
+delta_val = -float(diff) if stat_to_track in ['era', 'whip'] else float(diff)
+c3.metric(label="Pace Differential", value=f"{diff:.2f}", delta=delta_val)
