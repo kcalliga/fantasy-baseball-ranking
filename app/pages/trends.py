@@ -63,11 +63,18 @@ def load_and_combine_data(files, proj_f):
 
 df_p, df_a = load_and_combine_data(weekly_files, proj_file)
 
-# Core Stats for indexing
+# Logic definitions
 if player_type == "Batters":
     core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
+    vol_stat = 'ab'
+    MIN_VOL_THRESHOLD = 12.0 # Minimum At-Bats to appear in Pulse
 else:
     core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
+    vol_stat = 'ip'
+    MIN_VOL_THRESHOLD = 3.0 # Minimum Innings Pitched to appear in Pulse
+
+# Stats where LOWER is BETTER
+negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
 
 # --- 4. LEAGUE PULSE (MASTER TABLE) ---
 st.header("📡 League Pulse: Waivers & Watchlist")
@@ -82,29 +89,40 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
         
         if p_proj.empty: continue
         
+        # VOLUME FILTER: Skip players with insufficient weekly usage
+        current_vol = row.get(vol_stat, 0)
+        if current_vol < MIN_VOL_THRESHOLD:
+            continue
+        
         total_delta = 0
         for stat in core_stats:
-            if stat in ['era', 'whip', 'avg'] or stat not in row or stat not in p_proj.columns: 
+            if stat not in row or stat not in p_proj.columns: 
                 continue
             
             stat_std = df_p[stat].std() + 1e-9
             weekly_pace = p_proj[stat].values[0] / 26
             
-            # Simple Delta: (Actual this week - Weekly Pace) / StdDev
-            stat_delta = (row[stat] - weekly_pace) / stat_std
+            raw_delta = row[stat] - weekly_pace
+            
+            # Apply reverse logic for negative stats
+            if stat.lower() in negative_stats:
+                stat_delta = -(raw_delta) / stat_std
+            else:
+                stat_delta = raw_delta / stat_std
+                
             total_delta += stat_delta
             
         pulse_data.append({
             'Player': p_name, 
             'Team': row.get('team', 'N/A').upper(), 
+            vol_stat.upper(): current_vol,
             'Heat Index': round(total_delta, 2)
         })
 
     pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
     
-    st.write("Sort by clicking headers. Use the search icon to find specific waiver wire targets.")
+    st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} this week.")
     
-    # Styled Master Table with Heatmap
     st.dataframe(
         pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
         hide_index=True,
@@ -196,5 +214,7 @@ st.divider()
 c1, c2, c3 = st.columns(3)
 c1.metric("Current Performance", f"{final_act:.2f}")
 c2.metric("Projected Pace", f"{final_proj:.2f}")
-delta_val = -float(diff) if stat_to_track in ['era', 'whip'] else float(diff)
+
+# Color coloring: Flip delta for negative stats
+delta_val = -float(diff) if stat_to_track in negative_stats else float(diff)
 c3.metric(label="Pace Differential", value=f"{diff:.2f}", delta=delta_val)
