@@ -68,15 +68,27 @@ prev_week_num = latest_week_num - 1
 if player_type == "Batters":
     core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
     vol_stat = 'pa'
+    # Dynamic Threshold: 5 PA per week elapsed
     MIN_VOL_THRESHOLD = 5.0 * latest_week_num
 else:
     core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
     vol_stat = 'ip'
+    # Dynamic Threshold: 1.0 IP per week elapsed
     MIN_VOL_THRESHOLD = 1.0 * latest_week_num
 
 negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
 
-# --- 4. LEAGUE PULSE (WITH VELOCITY) ---
+def calculate_heat_value(stats_row, proj_row, core_list, p_df):
+    h = 0
+    for s in core_list:
+        if s not in stats_row or s not in proj_row.columns: continue
+        std = p_df[s].std() + 1e-9
+        pace = proj_row[s].values[0] / 26
+        diff = stats_row[s] - pace
+        h += -(diff)/std if s.lower() in negative_stats else diff/std
+    return h
+
+# --- 4. LEAGUE PULSE ---
 st.header("📡 League Pulse: Momentum & Waivers")
 with st.expander(f"🔍 Scan All {player_type} (Ranked by Velocity)", expanded=False):
     latest_stats = df_a[df_a['week_num'] == latest_week_num]
@@ -89,22 +101,12 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Velocity)", expanded=F
         if p_proj.empty or row.get(vol_stat, 0) < MIN_VOL_THRESHOLD:
             continue
         
-        def calculate_heat(stats_row):
-            h = 0
-            for s in core_stats:
-                if s not in stats_row or s not in p_proj.columns: continue
-                std = df_p[s].std() + 1e-9
-                pace = p_proj[s].values[0] / 26
-                diff = stats_row[s] - pace
-                h += -(diff)/std if s.lower() in negative_stats else diff/std
-            return h
-
-        curr_heat = calculate_heat(row)
+        curr_heat = calculate_heat_value(row, p_proj, core_stats, df_p)
         velocity = 0
         if has_prev:
             prev_row = df_a[(df_a['name'] == p_name) & (df_a['week_num'] == prev_week_num)]
             if not prev_row.empty:
-                velocity = curr_heat - calculate_heat(prev_row.iloc[0])
+                velocity = curr_heat - calculate_heat_value(prev_row.iloc[0], p_proj, core_stats, df_p)
 
         pulse_data.append({
             'Player': p_name, 
@@ -117,12 +119,12 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Velocity)", expanded=F
     if pulse_data:
         pulse_df = pd.DataFrame(pulse_data).sort_values(by='Velocity' if has_prev else 'Heat Index', ascending=False)
         st.dataframe(
-            pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index'])
-                          .background_gradient(cmap='PuOr', subset=['Velocity']),
+            pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index'], vmin=-2, vmax=2)
+                          .background_gradient(cmap='PuOr', subset=['Velocity'], vmin=-1, vmax=1),
             hide_index=True, use_container_width=True, height=350
         )
     else:
-        st.warning("No players met the volume threshold for the pulse table.")
+        st.warning(f"No players met volume threshold ({MIN_VOL_THRESHOLD} {vol_stat.upper()}).")
 
 st.divider()
 
@@ -152,7 +154,15 @@ display_options = [s.upper() for s in available_core]
 display_options.insert(0, "COMBINED INDEX") 
 stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True).lower()
 
-# --- 7. TREND LOGIC & CHARTING ---
+# --- 7. TREND LOGIC & CHARTS ---
+st.info("""
+💡 **Guide:** * **Cumulative Performance:** Blue vs Orange shows if they are hitting their year-end pace. 
+* **Weekly Momentum:** Shows 'Heat' per week. **Positive (Green)** is beating pace. **Velocity** is the change between bars.
+""")
+
+col_chart1, col_chart2 = st.columns(2)
+
+# Chart 1: Performance vs Pace
 if stat_to_track == "combined index":
     actual_units = np.zeros(len(weeks))
     expected_units = np.zeros(len(weeks))
@@ -179,31 +189,43 @@ else:
         y_label = f"Weekly {stat_to_track.upper()}"
     chart_data = pd.DataFrame({'Week': weeks, 'Actual': actual_data, 'Projected Pace': expected_data})
 
-fig = px.line(chart_data, x='Week', y=['Actual', 'Projected Pace'],
-              title=f"{selected_player}: {stat_to_track.upper()} Trends",
-              labels={'value': y_label, 'variable': 'Legend'},
-              markers=True, template="plotly_dark")
-fig.update_traces(line=dict(dash='dash', color='orange'), selector=dict(name='Projected Pace'))
-fig.update_traces(line=dict(width=4, color='#00d4ff'), selector=dict(name='Actual'))
-st.plotly_chart(fig, use_container_width=True)
+with col_chart1:
+    fig_main = px.line(chart_data, x='Week', y=['Actual', 'Projected Pace'],
+                  title=f"📈 {selected_player}: {stat_to_track.upper()} Performance",
+                  labels={'value': y_label, 'variable': 'Legend'},
+                  markers=True, template="plotly_dark")
+    fig_main.update_traces(line=dict(dash='dash', color='orange'), selector=dict(name='Projected Pace'))
+    fig_main.update_traces(line=dict(width=4, color='#00d4ff'), selector=dict(name='Actual'))
+    st.plotly_chart(fig_main, use_container_width=True)
 
-# --- 8. WEEKLY DATA BREAKDOWN TABLE (SOFT LOADING) ---
-st.subheader(f"📊 {selected_player}: Week-by-Week Breakdown")
+# Chart 2: Weekly Momentum
+weekly_heats = [calculate_heat_value(row, player_proj, core_stats, df_p) for _, row in player_actuals.iterrows()]
+momentum_df = pd.DataFrame({'Week': weeks, 'Weekly Heat': weekly_heats})
+momentum_df['Velocity'] = momentum_df['Weekly Heat'].diff().fillna(0)
 
-# Filter columns to only those that actually exist in player_actuals
+with col_chart2:
+    fig_mom = px.bar(momentum_df, x='Week', y='Weekly Heat', 
+                     title=f"🔥 {selected_player}: Weekly Momentum (Heat Index)",
+                     color='Weekly Heat', color_continuous_scale='RdYlGn', 
+                     color_continuous_midpoint=0, template="plotly_dark")
+    st.plotly_chart(fig_mom, use_container_width=True)
+
+# --- 8. BREAKDOWN TABLE ---
+st.subheader(f"📊 {selected_player}: Detailed Breakdown")
+
 valid_table_cols = ['week_num']
 if vol_stat in player_actuals.columns: valid_table_cols.append(vol_stat)
-for s in core_stats:
-    if s in player_actuals.columns: valid_table_cols.append(s)
+for s in available_core:
+    valid_table_cols.append(s)
 
 breakdown_df = player_actuals[valid_table_cols].copy()
+breakdown_df['WEEKLY_HEAT'] = [round(h, 2) for h in weekly_heats]
+breakdown_df['VELOCITY'] = [round(v, 2) for v in momentum_df['Velocity'].tolist()]
 
-# Add Cumulative versions safely
-for s in core_stats:
-    if s in player_actuals.columns and s not in ['era', 'whip', 'avg']:
+for s in available_core:
+    if s not in ['era', 'whip', 'avg']:
         breakdown_df[f"{s.upper()}_CUM"] = breakdown_df[s].cumsum()
 
-# Clean up headers for display
 breakdown_df.columns = [c.upper() for c in breakdown_df.columns]
 st.dataframe(breakdown_df, hide_index=True, use_container_width=True)
 
