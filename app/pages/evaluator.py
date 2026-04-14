@@ -28,6 +28,11 @@ if proj_file and actual_file:
     df_actual.columns = df_actual.columns.str.lower()
     
     if 'playerid' in df_proj.columns and 'playerid' in df_actual.columns:
+        
+        # Force both playerid columns to be strings to prevent merge errors
+        df_proj['playerid'] = df_proj['playerid'].astype(str)
+        df_actual['playerid'] = df_actual['playerid'].astype(str)
+        
         # Merge datasets (using lowercase 'name' and 'playerid')
         df = pd.merge(df_proj, df_actual, on=['playerid', 'name'], suffixes=('_proj', '_act'))
         
