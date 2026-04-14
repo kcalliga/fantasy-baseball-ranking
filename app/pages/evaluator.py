@@ -56,8 +56,10 @@ if proj_file and actual_file:
             st.warning("Please select at least one stat from the sidebar to evaluate.")
             st.stop()
 
-        # Initialize a column for the Scaled Total Error
+        # Initialize columns for our totals
         df['Total_Scaled_Error'] = 0.0
+        df['Total_Absolute_Error'] = 0.0  # Used for WAPE
+        df['Total_Actual_Volume'] = 0.0   # Used for WAPE
         display_columns = ['name']
         
         # Loop through every stat the user selected
@@ -72,8 +74,11 @@ if proj_file and actual_file:
             df[diff_col] = df[act_col] - df[proj_col]
             df[abs_col] = df[diff_col].abs()
             
+            # Accumulate totals for the WAPE calculation
+            df['Total_Absolute_Error'] += df[abs_col]
+            df['Total_Actual_Volume'] += df[act_col].abs()
+            
             # SCALE THE ERROR: Divide the absolute miss by the stat's standard deviation
-            # We add 1e-9 to prevent a "Divide by Zero" error just in case a stat is completely blank
             stat_std = df[act_col].std() + 1e-9
             df[f'{stat}_Scaled'] = df[abs_col] / stat_std
             
@@ -83,7 +88,7 @@ if proj_file and actual_file:
             # Add the raw columns we want to show in the final table for human readability
             display_columns.extend([proj_col, act_col, diff_col])
 
-        # Finally, add the Total Scaled Error to the end of the display list
+        # Add the Total Scaled Error to the end of the display list
         display_columns.append('Total_Scaled_Error')
 
         # --- 4. SYSTEM METRICS (THE "TOTAL ACROSS EVERYTHING") ---
@@ -92,10 +97,22 @@ if proj_file and actual_file:
         # We calculate the average scaled error across the entire system
         system_scaled_error = df['Total_Scaled_Error'].mean()
         
-        met1, met2 = st.columns(2)
+        # Calculate WAPE (Weighted Absolute Percentage Error)
+        total_system_abs_error = df['Total_Absolute_Error'].sum()
+        total_system_actuals = df['Total_Actual_Volume'].sum()
+        
+        # Protect against divide by zero
+        if total_system_actuals > 0:
+            system_wape = (total_system_abs_error / total_system_actuals) * 100
+        else:
+            system_wape = 0.0
+        
+        met1, met2, met3 = st.columns(3)
         met1.metric("Total Players Evaluated", len(df))
         met2.metric("System Scaled Error Index", f"{system_scaled_error:.3f}")
-        st.caption("*The Scaled Error Index normalizes stats by standard deviation. A lower number means the system is more accurate overall.*")
+        met3.metric("System WAPE", f"{system_wape:.1f}%")
+        
+        st.caption("*The **Scaled Error Index** normalizes stats by standard deviation (lower is better). **WAPE** shows the overall percentage miss relative to the total actual volume.*")
         
         st.divider()
         
