@@ -114,13 +114,15 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Velocity)", expanded=F
             'Velocity': round(velocity, 2) if has_prev else 0.0
         })
 
-    pulse_df = pd.DataFrame(pulse_data).sort_values(by='Velocity' if has_prev else 'Heat Index', ascending=False)
-    st.write("**Velocity** shows improvement from last week. **Heat Index** shows current performance vs pace.")
-    st.dataframe(
-        pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index'])
-                      .background_gradient(cmap='PuOr', subset=['Velocity']),
-        hide_index=True, use_container_width=True, height=350
-    )
+    if pulse_data:
+        pulse_df = pd.DataFrame(pulse_data).sort_values(by='Velocity' if has_prev else 'Heat Index', ascending=False)
+        st.dataframe(
+            pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index'])
+                          .background_gradient(cmap='PuOr', subset=['Velocity']),
+            hide_index=True, use_container_width=True, height=350
+        )
+    else:
+        st.warning("No players met the volume threshold for the pulse table.")
 
 st.divider()
 
@@ -145,7 +147,8 @@ if player_proj.empty:
     st.stop()
 
 weeks = player_actuals['week_num'].tolist()
-display_options = [s.upper() for s in core_stats if s in df_a.columns]
+available_core = [s for s in core_stats if s in df_a.columns]
+display_options = [s.upper() for s in available_core]
 display_options.insert(0, "COMBINED INDEX") 
 stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True).lower()
 
@@ -153,8 +156,8 @@ stat_to_track = st.radio("Statistic to Track", display_options, horizontal=True)
 if stat_to_track == "combined index":
     actual_units = np.zeros(len(weeks))
     expected_units = np.zeros(len(weeks))
-    for stat in core_stats:
-        if stat not in df_a.columns or stat not in df_p.columns or stat in ['era', 'whip', 'avg']: continue
+    for stat in available_core:
+        if stat not in df_p.columns or stat in ['era', 'whip', 'avg']: continue
         stat_std = df_p[stat].std() + 1e-9
         full_proj = player_proj[stat].values[0]
         weekly_pace = full_proj / 26
@@ -184,16 +187,24 @@ fig.update_traces(line=dict(dash='dash', color='orange'), selector=dict(name='Pr
 fig.update_traces(line=dict(width=4, color='#00d4ff'), selector=dict(name='Actual'))
 st.plotly_chart(fig, use_container_width=True)
 
-# --- 8. WEEKLY DATA BREAKDOWN TABLE ---
+# --- 8. WEEKLY DATA BREAKDOWN TABLE (SOFT LOADING) ---
 st.subheader(f"📊 {selected_player}: Week-by-Week Breakdown")
-breakdown_df = player_actuals[['week_num'] + [vol_stat] + core_stats].copy()
-breakdown_df.columns = [c.upper() for c in breakdown_df.columns]
 
-# Calculate Cumulatives for the table
+# Filter columns to only those that actually exist in player_actuals
+valid_table_cols = ['week_num']
+if vol_stat in player_actuals.columns: valid_table_cols.append(vol_stat)
 for s in core_stats:
-    if s not in ['era', 'whip', 'avg']:
-        breakdown_df[f"{s.upper()}_CUM"] = breakdown_df[s.upper()].cumsum()
+    if s in player_actuals.columns: valid_table_cols.append(s)
 
+breakdown_df = player_actuals[valid_table_cols].copy()
+
+# Add Cumulative versions safely
+for s in core_stats:
+    if s in player_actuals.columns and s not in ['era', 'whip', 'avg']:
+        breakdown_df[f"{s.upper()}_CUM"] = breakdown_df[s].cumsum()
+
+# Clean up headers for display
+breakdown_df.columns = [c.upper() for c in breakdown_df.columns]
 st.dataframe(breakdown_df, hide_index=True, use_container_width=True)
 
 # Footer Metrics
