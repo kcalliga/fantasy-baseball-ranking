@@ -62,14 +62,18 @@ def load_and_combine_data(files, proj_f):
 df_p, df_a = load_and_combine_data(weekly_files, proj_file)
 
 # Logic definitions
+latest_week_num = df_a['week_num'].max()
+
 if player_type == "Batters":
     core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
-    vol_stat = 'ab'
-    MIN_VOL_THRESHOLD = 5.0 # Lowered to 5 for better early-season compatibility
+    vol_stat = 'pa'
+    # DYNAMIC THRESHOLD: 5 PA per week elapsed
+    MIN_VOL_THRESHOLD = 5.0 * latest_week_num
 else:
     core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
     vol_stat = 'ip'
-    MIN_VOL_THRESHOLD = 1.0 # Lowered to 1 for relief pitcher visibility
+    # DYNAMIC THRESHOLD: 1.0 IP per week elapsed
+    MIN_VOL_THRESHOLD = 1.0 * latest_week_num
 
 # Stats where LOWER is BETTER
 negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
@@ -77,7 +81,6 @@ negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
 # --- 4. LEAGUE PULSE (MASTER TABLE) ---
 st.header("📡 League Pulse: Waivers & Watchlist")
 with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded=False):
-    latest_week_num = df_a['week_num'].max()
     latest_stats = df_a[df_a['week_num'] == latest_week_num]
     
     pulse_data = []
@@ -87,6 +90,7 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
         
         if p_proj.empty: continue
         
+        # VOLUME FILTER: Using Dynamic Threshold
         current_vol = row.get(vol_stat, 0)
         if current_vol < MIN_VOL_THRESHOLD:
             continue
@@ -115,10 +119,9 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
             'Heat Index': round(total_delta, 2)
         })
 
-    # --- SAFETY CHECK: ONLY SORT IF WE HAVE DATA ---
     if pulse_data:
         pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
-        st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} this week.")
+        st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} through Week {latest_week_num}.")
         st.dataframe(
             pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
             hide_index=True,
@@ -126,7 +129,7 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
             height=400
         )
     else:
-        st.warning(f"No {player_type} found meeting the minimum {vol_stat.upper()} threshold of {MIN_VOL_THRESHOLD}.")
+        st.warning(f"No {player_type} met the dynamic {vol_stat.upper()} threshold of {MIN_VOL_THRESHOLD}.")
 
 st.divider()
 
