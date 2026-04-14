@@ -42,13 +42,11 @@ if not proj_file:
 
 @st.cache_data
 def load_and_combine_data(files, proj_f):
-    # Projections
     df_proj = pd.read_csv(proj_f)
     df_proj.columns = df_proj.columns.str.lower()
     if 'playerid' in df_proj.columns:
         df_proj['playerid'] = df_proj['playerid'].astype(str)
     
-    # Weekly Actuals
     all_weeks = []
     for i, f in enumerate(files):
         temp_df = pd.read_csv(f)
@@ -67,11 +65,11 @@ df_p, df_a = load_and_combine_data(weekly_files, proj_file)
 if player_type == "Batters":
     core_stats = ['hr', 'sb', 'r', 'rbi', 'avg']
     vol_stat = 'ab'
-    MIN_VOL_THRESHOLD = 12.0 # Minimum At-Bats to appear in Pulse
+    MIN_VOL_THRESHOLD = 5.0 # Lowered to 5 for better early-season compatibility
 else:
     core_stats = ['w', 'sv', 'so', 'hld', 'era', 'whip']
     vol_stat = 'ip'
-    MIN_VOL_THRESHOLD = 3.0 # Minimum Innings Pitched to appear in Pulse
+    MIN_VOL_THRESHOLD = 1.0 # Lowered to 1 for relief pitcher visibility
 
 # Stats where LOWER is BETTER
 negative_stats = ['era', 'whip', 'bb', 'cs', 'e', 'l', 'hra']
@@ -89,7 +87,6 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
         
         if p_proj.empty: continue
         
-        # VOLUME FILTER: Skip players with insufficient weekly usage
         current_vol = row.get(vol_stat, 0)
         if current_vol < MIN_VOL_THRESHOLD:
             continue
@@ -104,7 +101,6 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
             
             raw_delta = row[stat] - weekly_pace
             
-            # Apply reverse logic for negative stats
             if stat.lower() in negative_stats:
                 stat_delta = -(raw_delta) / stat_std
             else:
@@ -119,16 +115,18 @@ with st.expander(f"🔍 Scan All {player_type} (Ranked by Heat Index)", expanded
             'Heat Index': round(total_delta, 2)
         })
 
-    pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
-    
-    st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} this week.")
-    
-    st.dataframe(
-        pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
-        hide_index=True,
-        use_container_width=True,
-        height=400
-    )
+    # --- SAFETY CHECK: ONLY SORT IF WE HAVE DATA ---
+    if pulse_data:
+        pulse_df = pd.DataFrame(pulse_data).sort_values(by='Heat Index', ascending=False)
+        st.write(f"Showing {player_type} with at least {MIN_VOL_THRESHOLD} {vol_stat.upper()} this week.")
+        st.dataframe(
+            pulse_df.style.background_gradient(cmap='RdYlGn', subset=['Heat Index']),
+            hide_index=True,
+            use_container_width=True,
+            height=400
+        )
+    else:
+        st.warning(f"No {player_type} found meeting the minimum {vol_stat.upper()} threshold of {MIN_VOL_THRESHOLD}.")
 
 st.divider()
 
@@ -215,6 +213,5 @@ c1, c2, c3 = st.columns(3)
 c1.metric("Current Performance", f"{final_act:.2f}")
 c2.metric("Projected Pace", f"{final_proj:.2f}")
 
-# Color coloring: Flip delta for negative stats
 delta_val = -float(diff) if stat_to_track in negative_stats else float(diff)
 c3.metric(label="Pace Differential", value=f"{diff:.2f}", delta=delta_val)
