@@ -5,64 +5,82 @@ import numpy as np
 st.set_page_config(page_title="System Evaluator", page_icon="⚖️", layout="wide")
 
 st.title("⚖️ Projection System Evaluator")
-st.markdown("Evaluate raw statistical accuracy of projection systems (e.g., ZiPS, Steamer) ignoring fantasy point values.")
+st.markdown("Upload multiple projection systems to compare their accuracy head-to-head against actual stats.")
 
 # --- 1. FILE UPLOADS ---
 st.subheader("Upload FanGraphs CSVs")
 col1, col2 = st.columns(2)
 
 with col1:
-    proj_file = st.file_uploader("Upload Projections (e.g., ZiPS)", type=["csv"])
+    # Set accept_multiple_files to True
+    proj_files = st.file_uploader("Upload Projections (e.g., ZiPS, Steamer)", type=["csv"], accept_multiple_files=True)
 with col2:
     actual_file = st.file_uploader("Upload Actual Stats", type=["csv"])
 
 st.divider()
 
 # --- 2. DATA PROCESSING ---
-if proj_file and actual_file:
-    df_proj = pd.read_csv(proj_file)
+if proj_files and actual_file:
+    # Load and clean the actuals file once
     df_actual = pd.read_csv(actual_file)
-    
-    # Standardize column names to lowercase to catch PlayerId vs playerid discrepancies
-    df_proj.columns = df_proj.columns.str.lower()
     df_actual.columns = df_actual.columns.str.lower()
     
-    if 'playerid' in df_proj.columns and 'playerid' in df_actual.columns:
+    if 'playerid' not in df_actual.columns:
+        st.error("Could not find 'playerid' in the Actuals CSV. Please check your FanGraphs export.")
+        st.stop()
         
-        # Force both playerid columns to be strings to prevent merge errors
+    df_actual['playerid'] = df_actual['playerid'].astype(str)
+    
+    # Dictionaries and lists to store results for multiple systems
+    system_metrics = []
+    processed_dfs = {}
+    
+    # Find common numeric columns based on the FIRST uploaded projection file to build the UI
+    df_first_proj = pd.read_csv(proj_files[0])
+    df_first_proj.columns = df_first_proj.columns.str.lower()
+    common_cols = [c for c in df_first_proj.columns if c in df_actual.columns and pd.api.types.is_numeric_dtype(df_first_proj[c])]
+    numeric_stats = [c for c in common_cols if c != 'playerid']
+
+    # --- 3. UI CONTROLS ---
+    st.sidebar.header("Evaluation Settings")
+    
+    available_stats = sorted([s.upper() for s in numeric_stats])
+    default_stats = [s for s in ['HR', 'SB', 'R', 'RBI', 'SO'] if s in available_stats]
+    
+    selected_stats = st.sidebar.multiselect(
+        "Select Stats to Evaluate", 
+        available_stats,
+        default=default_stats
+    )
+    
+    if not selected_stats:
+        st.warning("Please select at least one stat from the sidebar to evaluate.")
+        st.stop()
+
+    # --- PROCESS EACH UPLOADED SYSTEM ---
+    for p_file in proj_files:
+        # Extract a clean system name from the file name (e.g., "zips_2025.csv" -> "zips_2025")
+        system_name = p_file.name.replace('.csv', '').upper()
+        
+        # Load and clean this specific projection file
+        df_proj = pd.read_csv(p_file)
+        df_proj.columns = df_proj.columns.str.lower()
+        
+        if 'playerid' not in df_proj.columns:
+            st.warning(f"Skipping {system_name}: No 'playerid' column found.")
+            continue
+            
         df_proj['playerid'] = df_proj['playerid'].astype(str)
-        df_actual['playerid'] = df_actual['playerid'].astype(str)
         
-        # Merge datasets (using lowercase 'name' and 'playerid')
+        # Merge this system with the actuals
         df = pd.merge(df_proj, df_actual, on=['playerid', 'name'], suffixes=('_proj', '_act'))
         
-        # Identify numeric columns that exist in both files to populate our dropdown
-        common_cols = [c.replace('_proj', '') for c in df.columns if c.endswith('_proj')]
-        numeric_stats = [c for c in common_cols if c != 'playerid' and pd.api.types.is_numeric_dtype(df[f'{c}_proj'])]
-        
-        # --- 3. UI CONTROLS ---
-        st.sidebar.header("Evaluation Settings")
-        
-        available_stats = sorted([s.upper() for s in numeric_stats])
-        default_stats = [s for s in ['HR', 'SB', 'R', 'RBI', 'SO'] if s in available_stats]
-        
-        selected_stats = st.sidebar.multiselect(
-            "Select Stats to Evaluate (Combined)", 
-            available_stats,
-            default=default_stats
-        )
-        
-        if not selected_stats:
-            st.warning("Please select at least one stat from the sidebar to evaluate.")
-            st.stop()
-
-        # Initialize columns for our totals
+        # Initialize tracking columns
         df['Total_Scaled_Error'] = 0.0
-        df['Total_Absolute_Error'] = 0.0  # Used for WAPE
-        df['Total_Actual_Volume'] = 0.0   # Used for WAPE
+        df['Total_Absolute_Error'] = 0.0
+        df['Total_Actual_Volume'] = 0.0
         display_columns = ['name']
         
-        # Loop through every stat the user selected
         for stat in selected_stats:
             stat_lower = stat.lower()
             proj_col = f'{stat_lower}_proj'
@@ -70,70 +88,67 @@ if proj_file and actual_file:
             diff_col = f'{stat}_Diff'
             abs_col = f'{stat}_Abs_Err'
             
-            # Calculate the raw differential and absolute error
+            # If the stat is missing in this specific file, skip it gracefully
+            if proj_col not in df.columns or act_col not in df.columns:
+                continue
+            
             df[diff_col] = df[act_col] - df[proj_col]
             df[abs_col] = df[diff_col].abs()
             
-            # Accumulate totals for the WAPE calculation
             df['Total_Absolute_Error'] += df[abs_col]
             df['Total_Actual_Volume'] += df[act_col].abs()
             
-            # SCALE THE ERROR: Divide the absolute miss by the stat's standard deviation
+            # Scaled error
             stat_std = df[act_col].std() + 1e-9
             df[f'{stat}_Scaled'] = df[abs_col] / stat_std
-            
-            # Add this mathematically scaled error to the player's running total
             df['Total_Scaled_Error'] += df[f'{stat}_Scaled']
             
-            # Add the raw columns we want to show in the final table for human readability
             display_columns.extend([proj_col, act_col, diff_col])
-
-        # Add the Total Scaled Error to the end of the display list
+            
         display_columns.append('Total_Scaled_Error')
-
-        # --- 4. SYSTEM METRICS (THE "TOTAL ACROSS EVERYTHING") ---
-        st.subheader(f"Total System Accuracy for Selected Stats: {', '.join(selected_stats)}")
         
-        # We calculate the average scaled error across the entire system
+        # Calculate system-wide metrics
         system_scaled_error = df['Total_Scaled_Error'].mean()
         
-        # Calculate WAPE (Weighted Absolute Percentage Error)
-        total_system_abs_error = df['Total_Absolute_Error'].sum()
-        total_system_actuals = df['Total_Actual_Volume'].sum()
+        total_abs_error = df['Total_Absolute_Error'].sum()
+        total_actuals = df['Total_Actual_Volume'].sum()
+        system_wape = (total_abs_error / total_actuals) * 100 if total_actuals > 0 else 0.0
         
-        # Protect against divide by zero
-        if total_system_actuals > 0:
-            system_wape = (total_system_abs_error / total_system_actuals) * 100
-        else:
-            system_wape = 0.0
+        # Store metrics for the leaderboard
+        system_metrics.append({
+            "System Name": system_name,
+            "Players Evaluated": len(df),
+            "System WAPE (%)": round(system_wape, 2),
+            "Scaled Error Index": round(system_scaled_error, 3)
+        })
         
-        met1, met2, met3 = st.columns(3)
-        met1.metric("Total Players Evaluated", len(df))
-        met2.metric("System Scaled Error Index", f"{system_scaled_error:.3f}")
-        met3.metric("System WAPE", f"{system_wape:.1f}%")
+        # Save the processed dataframe for the drill-down view
+        processed_dfs[system_name] = df[display_columns].copy()
+
+    # --- 4. THE HEAD-TO-HEAD LEADERBOARD ---
+    if system_metrics:
+        st.subheader("🏆 Head-to-Head System Leaderboard")
+        st.caption(f"Based on accuracy for: {', '.join(selected_stats)}")
         
-        st.caption("*The **Scaled Error Index** normalizes stats by standard deviation (lower is better). **WAPE** shows the overall percentage miss relative to the total actual volume.*")
+        # Convert metrics to a dataframe and sort by best Scaled Error Index (lowest is best)
+        df_leaderboard = pd.DataFrame(system_metrics).sort_values(by="Scaled Error Index", ascending=True)
+        st.dataframe(df_leaderboard, use_container_width=True, hide_index=True)
         
         st.divider()
         
-        # --- 5. PLAYER LEADERBOARD ---
-        st.write("### Player-Level Accuracy Dashboard")
-        st.write("Review raw differences for each stat. Sorted by the highest mathematically scaled error.")
+        # --- 5. PLAYER LEADERBOARD (DRILL DOWN) ---
+        st.write("### 🔍 Player-Level Drill Down")
         
-        # Filter the dataframe to just our display columns and sort by the biggest scaled miss
-        display_df = df[display_columns].copy()
-        display_df = display_df.sort_values(by='Total_Scaled_Error', ascending=False)
+        # Let the user pick which system's player errors they want to look at
+        view_system = st.selectbox("Select System to View Player Errors:", list(processed_dfs.keys()))
         
-        # Rename the columns cleanly
-        display_df.rename(columns={'name': 'Player Name', 'Total_Scaled_Error': 'Total Scaled Error'}, inplace=True)
-        
-        # Round the scaled error for a cleaner UI
-        display_df['Total Scaled Error'] = display_df['Total Scaled Error'].round(3)
-        
-        # Display the interactive table
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-        
-    else:
-        st.error("Could not find 'playerid' in one or both CSVs. Please check your FanGraphs exports.")
+        if view_system:
+            display_df = processed_dfs[view_system]
+            display_df = display_df.sort_values(by='Total_Scaled_Error', ascending=False)
+            display_df.rename(columns={'name': 'Player Name', 'Total_Scaled_Error': 'Total Scaled Error'}, inplace=True)
+            display_df['Total Scaled Error'] = display_df['Total Scaled Error'].round(3)
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
 else:
     st.info("Awaiting file uploads. Drop your Projections and Actuals CSVs above.")
