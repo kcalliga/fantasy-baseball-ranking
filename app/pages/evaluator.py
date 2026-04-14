@@ -128,7 +128,7 @@ if proj_files and actual_file:
         # Save the processed dataframe for the drill-down view
         processed_dfs[system_name] = df[display_columns].copy()
 
-    # --- 4. THE HEAD-TO-HEAD LEADERBOARD ---
+# --- 4. THE HEAD-TO-HEAD LEADERBOARD ---
     if system_metrics:
         st.subheader("🏆 Head-to-Head System Leaderboard")
         st.caption(f"Based on accuracy for: {', '.join(selected_stats)}")
@@ -137,6 +137,23 @@ if proj_files and actual_file:
         df_leaderboard = pd.DataFrame(system_metrics).sort_values(by="Scaled Error Index", ascending=True)
         st.dataframe(df_leaderboard, use_container_width=True, hide_index=True)
         
+        # --- AUTOMATED TAKEAWAY ---
+        if len(df_leaderboard) > 1:
+            # Extract the winning system's stats
+            best_system = df_leaderboard.iloc[0]['System Name']
+            best_scaled = df_leaderboard.iloc[0]['Scaled Error Index']
+            best_wape = df_leaderboard.iloc[0]['System WAPE (%)']
+            
+            # Extract the second-place system to show the margin of victory
+            runner_up = df_leaderboard.iloc[1]['System Name']
+            
+            st.success(f"**💡 The Verdict:** Based on your selected categories, **{best_system}** was the most accurate projection system. "
+                       f"It edged out {runner_up} with the lowest Scaled Error Index ({best_scaled}), meaning it did the best job "
+                       f"avoiding massive, irreplaceable misses. Overall, its raw volume projections were off by an average of {best_wape}%.")
+        elif len(df_leaderboard) == 1:
+            st.info(f"**💡 System Performance:** You are currently evaluating **{df_leaderboard.iloc[0]['System Name']}** in isolation. "
+                    f"Upload another system (like Steamer or ATC) into the Projections box to see a head-to-head comparison!")
+            
         st.divider()
         
         # --- 5. PLAYER LEADERBOARD (DRILL DOWN) ---
