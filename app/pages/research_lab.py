@@ -1,83 +1,113 @@
 import streamlit as st
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-import glob
-import os
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Research Lab", page_icon="🧪", layout="wide")
 
 st.title("🧪 Advanced Research Lab")
-st.write("Perform ad-hoc analysis, correlations, and deeper statistical dives.")
+st.write("Upload high-dimensional datasets to find hidden statistical relationships.")
 
-# --- 1. DATA SELECTION ---
-BASE_STATS_PATH = "data/weekly_stats"
-existing_years = [d for d in os.listdir(BASE_STATS_PATH) if os.path.isdir(os.path.join(BASE_STATS_PATH, d))]
-selected_year = st.sidebar.selectbox("Season Year", sorted(existing_years, reverse=True))
-player_type = st.sidebar.radio("Analyze:", ["Batters", "Pitchers"])
-YEAR_FOLDER = os.path.join(BASE_STATS_PATH, selected_year, player_type.lower())
+# --- 1. DATA UPLOAD ---
+st.sidebar.header("📁 Data Source")
+uploaded_file = st.sidebar.file_uploader("Upload CSV for Analysis", type=["csv"])
 
-# Load the latest weekly file for analysis
-weekly_files = sorted(glob.glob(os.path.join(YEAR_FOLDER, "*.csv")))
-
-if not weekly_files:
-    st.info("No data found to analyze.")
+if not uploaded_file:
+    st.info("💡 Please upload a CSV file in the sidebar to begin analysis. (e.g., a full Statcast export with 50+ columns)")
     st.stop()
 
-# Use the most recent week's data for the cross-sectional correlation
-df = pd.read_csv(weekly_files[-1])
+# Load data
+df = pd.read_csv(uploaded_file)
 df.columns = df.columns.str.lower()
 
-# --- 2. CORRELATION MATRIX TOOL ---
-st.header("📊 Variable Correlation Matrix")
-st.write("""
-Select the statistics you want to compare. This helps identify which 'raw' metrics 
-(like Exit Velocity or Bat Speed) have the strongest relationship with fantasy outcomes.
-""")
+# Clean numeric data
+numeric_df = df.select_dtypes(include=[np.number]).drop(columns=['playerid', 'week_num', 'year'], errors='ignore')
 
-# Only allow numeric columns for correlation
-numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-# Filter out boring columns like 'playerid' or 'week_num'
-ignore_cols = ['playerid', 'week_num', 'year']
-filtered_cols = [c for c in numeric_cols if c not in ignore_cols]
+if numeric_df.empty:
+    st.error("No numeric columns found in the uploaded file.")
+    st.stop()
 
-selected_metrics = st.multiselect(
-    "Select Metrics to Correlate:", 
-    options=filtered_cols, 
-    default=filtered_cols[:8] if len(filtered_cols) > 8 else filtered_cols
+# --- 2. TARGET ANALYSIS (The "Non-Clunky" View) ---
+st.header("🎯 Target Variable Focus")
+st.write("Pick one outcome (e.g., 'HR') to see which 'raw' metrics correlate most strongly with it.")
+
+target_col = st.selectbox("Select Target Variable:", options=numeric_df.columns, index=0)
+
+# Calculate correlations for just that target
+target_corr = numeric_df.corr()[target_col].sort_values(ascending=False)
+# Remove the target's correlation with itself
+target_corr = target_corr.drop(labels=[target_col])
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.subheader("Strongest Relationships")
+    st.write(f"Top 10 metrics driving **{target_col.upper()}**:")
+    st.dataframe(target_corr.head(10), use_container_width=True)
+
+with col2:
+    # Bar chart of correlations
+    fig_target = px.bar(
+        x=target_corr.head(15).index, 
+        y=target_corr.head(15).values,
+        labels={'x': 'Metric', 'y': 'Correlation Coefficient'},
+        title=f"Correlation with {target_col.upper()}",
+        color=target_corr.head(15).values,
+        color_continuous_scale='RdYlGn'
+    )
+    st.plotly_chart(fig_target, use_container_width=True)
+
+st.divider()
+
+# --- 3. THE INTERACTIVE MASTER MATRIX ---
+st.header("🌐 Interactive Master Matrix")
+st.write("Use the box-zoom tool (top right of chart) to dive into specific clusters of data.")
+
+# Sidebar filter for the big matrix so it's not overwhelmed
+all_cols = numeric_df.columns.tolist()
+selected_for_matrix = st.multiselect(
+    "Filter Matrix Columns (Defaults to first 25):", 
+    options=all_cols, 
+    default=all_cols[:25] if len(all_cols) > 25 else all_cols
 )
 
-if len(selected_metrics) < 2:
-    st.warning("Please select at least two metrics to see a correlation.")
-else:
-    # Calculate Correlation
-    corr_matrix = df[selected_metrics].corr()
-
-    # Plotting
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f", ax=ax, center=0)
-    plt.title(f"Correlation Matrix: {player_type}")
-    st.pyplot(fig)
-
-    # Key Insights Section
-    st.subheader("💡 Key Findings")
-    # Identify the highest correlation in the matrix (excluding 1.0)
-    stack = corr_matrix.unstack()
-    strongest = stack[stack < 1].sort_values(ascending=False).head(2)
+if len(selected_for_matrix) > 1:
+    corr_matrix = numeric_df[selected_for_matrix].corr()
     
-    if not strongest.empty:
-        var1, var2 = strongest.index[0]
-        val = strongest.values[0]
-        st.write(f"The strongest relationship in your selection is between **{var1.upper()}** and **{var2.upper()}** ({val:.2f}).")
+    # Use Plotly Heatmap for zooming and hovering
+    fig_heat = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns,
+        y=corr_matrix.index,
+        colorscale='RdBu',
+        zmin=-1, zmax=1,
+        hoverongaps=False,
+        hovertemplate='X: %{x}<br>Y: %{y}<br>Corr: %{z:.3f}<extra></extra>'
+    ))
+    
+    fig_heat.update_layout(
+        height=700,
+        title="Master Correlation Map (Zoomable)",
+        xaxis_nticks=36
+    )
+    
+    st.plotly_chart(fig_heat, use_container_width=True)
+else:
+    st.warning("Select at least 2 columns for the matrix.")
 
-# --- 3. SCATTER PLOT DIV (The 'Why' Factor) ---
+# --- 4. OUTLIER DISCOVERY ---
 st.divider()
-st.header("🎯 Deep Dive: X vs Y")
+st.header("🔭 Outlier Discovery (X vs Y)")
+col_x, col_y = st.columns(2)
+x_var = col_x.selectbox("Predictor (X):", options=all_cols, index=0)
+y_var = col_y.selectbox("Outcome (Y):", options=all_cols, index=1)
 
-col1, col2 = st.columns(2)
-x_axis = col1.selectbox("X-Axis (Predictor):", options=filtered_cols, index=0)
-y_axis = col2.selectbox("Y-Axis (Outcome):", options=filtered_cols, index=1)
-
-fig_scatter = sns.lmplot(data=df, x=x_axis, y=y_axis, aspect=1.5, scatter_kws={'alpha':0.5})
-plt.title(f"Relationship: {x_axis.upper()} vs {y_axis.upper()}")
-st.pyplot(plt.gcf())
+fig_scatter = px.scatter(
+    df, x=x_var, y=y_var, 
+    hover_name='name' if 'name' in df.columns else None,
+    trendline="ols",
+    title=f"{x_var.upper()} vs {y_var.upper()}",
+    template="plotly_dark"
+)
+st.plotly_chart(fig_scatter, use_container_width=True)
