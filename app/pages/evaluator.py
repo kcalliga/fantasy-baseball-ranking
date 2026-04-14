@@ -62,6 +62,9 @@ if proj_files and actual_file:
         # Extract a clean system name from the file name (e.g., "zips_2025.csv" -> "zips_2025")
         system_name = p_file.name.replace('.csv', '').upper()
         
+        # REWIND THE FILE POINTER TO THE BEGINNING!
+        p_file.seek(0)
+        
         # Load and clean this specific projection file
         df_proj = pd.read_csv(p_file)
         df_proj.columns = df_proj.columns.str.lower()
